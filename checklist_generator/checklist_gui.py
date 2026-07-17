@@ -452,6 +452,12 @@ class ChecklistApp:
                         else:
                             invoice_df = pd.read_excel(file_path)
                             self.root.after(0, lambda: _parse_aviat_excel(invoice_df))
+                    elif self.importer.lower() in ['bharti airtel', 'bharti hexacom']:
+                        if file_path.lower().endswith('.pdf'):
+                            self.root.after(0, lambda: _parse_airtel_invoice(file_path))
+                        else:
+                            invoice_df = pd.read_excel(file_path)
+                            self.root.after(0, lambda: _on_file_parsed(invoice_df))
                     else:
                         invoice_df = pd.read_excel(file_path)
                         self.root.after(0, lambda: _on_file_parsed(invoice_df))
@@ -459,6 +465,108 @@ class ChecklistApp:
                     self.root.after(0, lambda err=e: _handle_upload_err(err))
                     
             threading.Thread(target=parse_thread, daemon=True).start()
+            
+        def _parse_airtel_invoice(file_path):
+            self.root.config(cursor="")
+            self.status_label.config(text="")
+            
+            # Detect format (Ciena vs ECI vs Ceragon)
+            pdf_type = "unknown"
+            try:
+                import pdfplumber
+                with pdfplumber.open(file_path) as pdf:
+                    first_page_text = pdf.pages[0].extract_text() or ""
+                    first_lower = first_page_text.lower()
+                    if "ciena" in first_lower:
+                        pdf_type = "ciena"
+                    elif "eci telecom" in first_lower:
+                        pdf_type = "eci"
+                    elif "ceragon" in first_lower:
+                        pdf_type = "ceragon"
+            except Exception:
+                pass
+            
+            if self.importer.lower() == 'bharti hexacom' and pdf_type != 'ceragon':
+                messagebox.showerror(
+                    "Unrecognized Format",
+                    "Bharti Hexacom only supports the Ceragon invoice format.\n\n"
+                    "Please upload a valid Ceragon PDF invoice."
+                )
+                return
+                
+            if pdf_type == "unknown":
+                messagebox.showerror(
+                    "Unrecognized Format",
+                    "This PDF does not match any known Airtel invoice format "
+                    "(Ceragon, Ciena, or ECI Telecom).\n\n"
+                    "Please check the file and try again, or use manual model entry."
+                )
+                return
+                
+            try:
+                if pdf_type == "ciena":
+                    import airtel_ciena_extractor
+                    inv_no, doc_date, currency, items = airtel_ciena_extractor.parse_ciena_invoice(file_path)
+                elif pdf_type == "eci":
+                    import airtel_eci_extractor
+                    inv_no, doc_date, currency, items = airtel_eci_extractor.parse_eci_invoice(file_path)
+                else:
+                    import airtel_ceragon_extractor
+                    inv_no, doc_date, currency, items = airtel_ceragon_extractor.parse_ceragon_invoice(file_path)
+            except Exception as e:
+                messagebox.showerror("Parse Error", f"Failed to parse Airtel {pdf_type.capitalize()} PDF:\n{str(e)}")
+                return
+                
+            if not items:
+                messagebox.showinfo("Info", "No line items found in the PDF.")
+                return
+                
+            target_to_col_idx = {}
+            for t_key in ["Inv No", "Date", "Quantity", "Rate", "Country of origin", "Currency", "CETH", "Unit", "CTH", "Product Desc"]:
+                for i, h in enumerate(checklist_logic.LOGISYS_HEADERS):
+                    if str(h).strip().lower() == t_key.lower():
+                        target_to_col_idx[t_key] = f"col_{i+1}"
+                        break
+                        
+            queue_items = []
+            for item in items:
+                model_val = item.get("part_no", "")
+                if not model_val: continue
+                
+                if pdf_type in ("ciena", "eci"):
+                    prefilled = {
+                        target_to_col_idx.get("Inv No"): inv_no,
+                        target_to_col_idx.get("Date"): doc_date,
+                        target_to_col_idx.get("Quantity"): item.get("quantity", ""),
+                        target_to_col_idx.get("Rate"): item.get("rate", ""),
+                        target_to_col_idx.get("Country of origin"): item.get("coo", ""),
+                        target_to_col_idx.get("Currency"): currency,
+                        target_to_col_idx.get("Unit"): item.get("unit", ""),
+                        target_to_col_idx.get("CTH"): item.get("cth", ""),
+                        target_to_col_idx.get("Product Desc"): item.get("description", "")
+                    }
+                else:
+                    prefilled = {
+                        target_to_col_idx.get("Inv No"): inv_no,
+                        target_to_col_idx.get("Date"): doc_date,
+                        target_to_col_idx.get("Quantity"): item.get("quantity", ""),
+                        target_to_col_idx.get("Rate"): item.get("unit_price", ""),
+                        target_to_col_idx.get("Country of origin"): item.get("coo", ""),
+                        target_to_col_idx.get("Currency"): currency,
+                        target_to_col_idx.get("CETH"): "NOEXCISE",
+                        target_to_col_idx.get("Unit"): "NOS"
+                    }
+                prefilled = {k: v for k, v in prefilled.items() if k is not None}
+                queue_items.append({'model': model_val, 'prefilled': prefilled})
+                
+            if queue_items:
+                if not hasattr(self, 'session_queue'):
+                    self.session_queue = []
+                self.session_queue.extend(queue_items)
+                
+                self.status_label.config(text=f"⚙️ Matching {len(queue_items)} models...")
+                self.root.update_idletasks()
+                self._process_model_queue(queue_items)
             
         def _parse_aviat_excel(df):
             self.root.config(cursor="")

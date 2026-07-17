@@ -126,3 +126,54 @@ AVIAT supports both PDF invoices and extracted Excel sheets. Both bypass the man
     *   **CoO Check**: If the `CoO` column is missing, or if any part row contains a blank CoO, the system halts with a popup instructing the user to add/fill the CoO details.
     *   **Currency Check**: If the `Currency` column is missing, or if any part row contains a blank Currency, the system halts with a popup instructing the user to add/fill the Currency details.
 
+---
+
+## 6. BHARTI AIRTEL & BHARTI HEXACOM (Custom PDF Extraction)
+Bharti Airtel and Bharti Hexacom invoices support PDF uploads:
+*   **Bharti Airtel** dynamically detects and routes to one of three formats (Ceragon, Ciena, or ECI Telecom) based on keywords found on the first page.
+*   **Bharti Hexacom** exclusively supports the Ceragon invoice format.
+
+### Option A: Ceragon format
+*   **Detection**: The PDF must contain the word `"Ceragon"` on the first page.
+*   **Invoice No**: Extracted from `Commercial Invoice No. <num>`.
+*   **Date**: Date pattern `DD-MMM-YYYY` (e.g. `29-JUN-2026` or `28-APR-2026`), normalized to `DD-MM-YYYY`.
+*   **Currency**: Scanned from `Unit Price [USD]` or `Total Amount [USD]` header blocks.
+*   **Line Items**:
+    *   **Model**: Model No column (`col_24`). Uses coordinate-based matching to check if a wrapped suffix (e.g. `F3`, `J6`, `X1`) exists on the line below and appends it.
+    *   **Quantity**: Order Qty column.
+    *   **Unit**: Hardcoded as `"NOS"`.
+    *   **Rate**: Unit Price column.
+    *   **Country of Origin**: Country of Origin column.
+    *   **CETH**: Hardcoded as `"NOEXCISE"`.
+
+### Option B: Ciena format
+*   **Invoice No**: Extracted from `COMMERCIAL INVOICE NO. <num>` or `Invoice #:`.
+*   **Date**: Extracted from `Date of Invoice:` block, normalized to `DD-MM-YYYY`.
+*   **Currency**: Extracted from `Currency:` block.
+*   **Line Items**:
+    *   **Model**: Product / Part No column.
+    *   **Quantity**: Qty column.
+    *   **Unit**: UOM column (e.g. `"EA"`).
+    *   **Rate**: Unit Value column.
+    *   **Country of Origin**: COO column.
+    *   **CTH**: HTS Code column. Combines wrapped HTS suffix on the line below (e.g. `8517620` + `090` = `8517620090`).
+    *   **Product Desc**: Full concatenated description (Part No + Description block).
+
+### Option C: ECI format
+*   **Detection**: The PDF must contain the phrase `"ECI Telecom"` on the first page.
+*   **Invoice No**: Extracted from `Invoice / Delivery No:`.
+*   **Date**: Extracted from `Date:` block (e.g. `21-JUN-26`), normalized to `DD-MM-YYYY`.
+*   **Currency**: Extracted from `Currency:` on page 1.
+*   **Country of Origin**: Extracted from `COO:` on page 1 (e.g. `THAILAND`).
+*   **Line Items** (table typically on page 2):
+    *   **Model**: `Item Code` column (e.g. `X44994H`).
+    *   **Quantity**: `Shipped Qty` column.
+    *   **Unit**: `UOM` column (e.g. `"EA"`).
+    *   **Rate**: `Unit Price` column.
+    *   **Product Desc**: `Product Name` column (used as fallback for model-not-found cases; master takes priority).
+
+> [!IMPORTANT]
+> **Airtel Format Fallback**: If the uploaded PDF does not contain any of the keywords `"Ceragon"`, `"Ciena"`, or `"ECI Telecom"` on the first page, the tool will immediately show an error dialog: *"This PDF does not match any known Airtel invoice format. Please check the file and try again, or use manual model entry."*
+>
+> **Hexacom Validation**: If **Bharti Hexacom** is selected and the PDF is not detected as Ceragon format, the tool will display the error dialog: *"Bharti Hexacom only supports the Ceragon invoice format. Please upload a valid Ceragon PDF invoice."*
+
