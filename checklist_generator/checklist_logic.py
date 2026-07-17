@@ -16,14 +16,17 @@ LOGISYS_HEADERS = ['Inv No', 'Date', 'TOI', 'Product Desc', 'Quantity', 'Unit', 
 def lookup_model_local(df: pd.DataFrame, model: str):
     """
     Looks up a model in the preloaded dataframe.
-    Matches strictly as string.
+    Matches strictly as string, ignoring case and all whitespace (internal, leading, and trailing).
     Returns a list of dictionaries for all matching rows.
     """
     if df.empty or 'Model' not in df.columns:
         return []
         
-    model_str = str(model).strip()
-    matches = df[df['Model'] == model_str]
+    def norm(x):
+        return "".join(str(x).split()).lower()
+        
+    target_norm = norm(model)
+    matches = df[df['Model'].astype(str).apply(norm) == target_norm]
     return matches.to_dict('records')
 
 def export_checklist(data_rows: list, output_path: str):

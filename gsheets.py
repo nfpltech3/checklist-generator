@@ -84,3 +84,137 @@ class GSheetsClient:
         
         worksheet.update_cells(cells, value_input_option='USER_ENTERED')
 
+    def add_pending_models(self, url: str, pending_rows: list):
+        """
+        Add missing models to the Pending_Model_Approval sheet if they don't already exist.
+        pending_rows is a list of dicts with keys matching the sheet headers.
+        Columns: Model, Product Desc, Country of Origin, Generic Description, Importer, Added_By, Added_At, Status
+        """
+        if not pending_rows:
+            return
+            
+        try:
+            df, ws = self.get_sheet_data(url, "Pending_Model_Approval")
+        except Exception as e:
+            print(f"Failed to fetch Pending_Model_Approval sheet: {e}")
+            return
+            
+        headers = df.columns.tolist() if not df.empty else ["Model", "Product Desc", "Country of Origin", "Generic Description", "Importer", "Added_By", "Added_At", "Status"]
+        
+        # Check for existing pending items to avoid duplicates
+        # We consider a duplicate if Model + Importer match and Status is 'Pending'
+        existing_pending = set()
+        if not df.empty:
+            pending_df = df[df['Status'].str.strip().str.lower() == 'pending']
+            for _, row in pending_df.iterrows():
+                existing_pending.add((str(row.get('Model', '')).strip().lower(), str(row.get('Importer', '')).strip().lower()))
+                
+        new_sheet_rows = []
+        for pr in pending_rows:
+            m = str(pr.get('Model', '')).strip().lower()
+            imp = str(pr.get('Importer', '')).strip().lower()
+            if (m, imp) not in existing_pending:
+                row_list = [str(pr.get(h, "")) for h in headers]
+                new_sheet_rows.append(row_list)
+                existing_pending.add((m, imp))
+                
+        if new_sheet_rows:
+            self.append_rows(ws, new_sheet_rows)
+
+    def mark_pending_model_resolved(self, url: str, model: str, importer: str):
+        """
+        Mark a pending model as Resolved in the Pending_Model_Approval sheet.
+        """
+        try:
+            df, ws = self.get_sheet_data(url, "Pending_Model_Approval")
+        except Exception:
+            return
+            
+        if df.empty:
+            return
+            
+        m_lower = str(model).strip().lower()
+        imp_lower = str(importer).strip().lower()
+        
+        status_col_idx = None
+        for i, col in enumerate(df.columns):
+            if str(col).strip().lower() == "status":
+                status_col_idx = i + 1
+                break
+                
+        if not status_col_idx:
+            return
+            
+        updates = []
+        for idx, row in df.iterrows():
+            if str(row.get('Status', '')).strip().lower() == 'pending':
+                if str(row.get('Model', '')).strip().lower() == m_lower and str(row.get('Importer', '')).strip().lower() == imp_lower:
+                    # idx is 0-based for df, meaning row 2 in sheet (since row 1 is header)
+                    sheet_row = idx + 2
+                    updates.append({'row': sheet_row, 'col': status_col_idx, 'value': 'Resolved'})
+                    
+        if updates:
+            self.update_cells(ws, updates)
+
+    def update_mapping_last_used(self, url: str, importer: str, format_name: str):
+        """
+        Update the Last_Used_At timestamp for a specific Format_Name in Invoice_Header_Mappings.
+        """
+        from datetime import datetime
+        try:
+            df, ws = self.get_sheet_data(url, "Invoice_Header_Mappings")
+        except Exception as e:
+            print(f"Failed to fetch Invoice_Header_Mappings sheet for update: {e}")
+            return
+            
+        if df.empty:
+            return
+            
+        imp_lower = str(importer).strip().lower()
+        fmt_lower = str(format_name).strip().lower()
+        
+        last_used_col_idx = None
+        for i, col in enumerate(df.columns):
+            if str(col).strip().lower() == "last_used_at":
+                last_used_col_idx = i + 1
+                break
+                
+        if not last_used_col_idx:
+            # If the column doesn't exist, we skip updating
+            return
+            
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        updates = []
+        
+        for idx, row in df.iterrows():
+            if str(row.get('Importer', '')).strip().lower() == imp_lower and str(row.get('Format_Name', '')).strip().lower() == fmt_lower:
+                # idx is 0-based for df, meaning row 2 in sheet
+                sheet_row = idx + 2
+                updates.append({'row': sheet_row, 'col': last_used_col_idx, 'value': current_time})
+                
+        if updates:
+            self.update_cells(ws, updates)
+            
+    def save_new_header_mapping(self, url: str, mappings: list):
+        """
+        Append new header mapping rows to Invoice_Header_Mappings.
+        mappings should be a list of dicts with: Importer, Format_Name, Source_Header, Target_Field, Last_Used_At
+        """
+        if not mappings:
+            return
+            
+        try:
+            df, ws = self.get_sheet_data(url, "Invoice_Header_Mappings")
+        except Exception as e:
+            print(f"Failed to fetch Invoice_Header_Mappings sheet for save: {e}")
+            return
+            
+        headers = df.columns.tolist() if not df.empty else ["Importer", "Format_Name", "Source_Header", "Target_Field", "Last_Used_At"]
+        
+        new_sheet_rows = []
+        for m in mappings:
+            row_list = [str(m.get(h, "")) for h in headers]
+            new_sheet_rows.append(row_list)
+            
+        if new_sheet_rows:
+            self.append_rows(ws, new_sheet_rows)
