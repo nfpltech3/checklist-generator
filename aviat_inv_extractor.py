@@ -48,7 +48,8 @@ IGNORE_KEYWORDS = [
     "FREIGHT TERMS", "TRACKING NO", "cargo-partner", "Harsh Bhardwaj", "Harsh.Bhardwaj",
     "SHIPPED VIA", "SIGNATURE OF SHIPPER", "These goods are essential part", "No payment, value mentioned",
     "DIMENSIONS PACKAGING", "TOTAL:", "188x78x66cm", "127x82x68cm", "80x55x38cm", "73x55x52cm", "120x80x55cm",
-    "VALUE FREIGHT INSURANCE"
+    "VALUE FREIGHT INSURANCE", "THESE ITEMS ARE CONTROLLED", "IDENTIFIED. THEY MAY NOT BE RESOLD",
+    "IN THEIR ORIGINAL FORM", "I DECLARE THAT ALL INFORMATION", "Capital goods being imported"
 ]
 
 # ---------------------------------------------------------------------------
@@ -81,6 +82,27 @@ def format_date_helper(date_str: str):
     clean_date = re.sub(r"\s+", " ", date_str).strip()
     return clean_date, clean_date
 
+def parse_flexible_float(val: str) -> float:
+    """Parse float from string handling both 1,234.56 and 1.234,56 formats."""
+    val = val.strip()
+    if not val:
+        return 0.0
+    if "." in val and "," in val:
+        if val.rfind(",") > val.rfind("."):
+            # comma is decimal: 1.234,56
+            return float(val.replace(".", "").replace(",", "."))
+        else:
+            # dot is decimal: 1,234.56
+            return float(val.replace(",", ""))
+    elif "," in val:
+        # If one comma and 1-2 digits after it, assume it's a decimal (e.g. 124,00)
+        if val.count(",") == 1 and len(val) - val.find(",") <= 3:
+            return float(val.replace(",", "."))
+        else:
+            return float(val.replace(",", ""))
+    else:
+        return float(val)
+
 def trim_hs_code(hs_code: str) -> str:
     """Remove decimal dots from HS Code."""
     if not hs_code:
@@ -108,6 +130,11 @@ def parse_commercial_invoice(pdf_path: str):
     with pdfplumber.open(pdf_path) as pdf:
         for page_idx, page in enumerate(pdf.pages):
             text = page.extract_text() or ""
+            
+            # If we reach the Packing List pages, stop parsing as Commercial Invoice
+            if "PACKING LIST" in text[:200] and "COMMERCIAL INVOICE NO" not in text[:200]:
+                break
+                
             lines = text.split("\n")
             
             for line in lines:
@@ -125,26 +152,26 @@ def parse_commercial_invoice(pdf_path: str):
                     if date_match:
                         doc_date_raw = date_match.group(1)
 
-                # Check if it starts with Line Number (e.g. 15.1)
-                item_start_match = re.match(r"^(\d+\.\d+)\s+(.+)$", line)
-                if item_start_match and len(item_start_match.group(1).split('.')[0]) <= 3:
-                    line_no = item_start_match.group(1)
+                # Check if it starts with Line Number (e.g. 15.1 or 15,1)
+                item_start_match = re.match(r"^(\d+[.,]\d+)\s+(.+)$", line)
+                if item_start_match and len(re.split(r'[.,]', item_start_match.group(1))[0]) <= 3:
+                    line_no = item_start_match.group(1).replace(',', '.')  # Normalize line number to use period
                     rest = item_start_match.group(2).strip()
                     rest = rest.replace("(cid:9)", "\t")
                     
                     # Look for Qty, UnitPrice, Extension at end of row
-                    end_match = re.search(r"\s+(\d+)\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)$", rest)
+                    end_match = re.search(r"\s+(\d+)\s+([\d.,]+)\s+([\d.,]+)$", rest)
                     if end_match:
                         qty = int(end_match.group(1))
-                        unit_price = float(end_match.group(2).replace(",", ""))
-                        extension = float(end_match.group(3).replace(",", ""))
+                        unit_price = parse_flexible_float(end_match.group(2))
+                        extension = parse_flexible_float(end_match.group(3))
                         middle = rest[:end_match.start()].strip()
                     else:
                         qty = None
                         unit_price = None
                         extension = None
                         middle = rest
-                    
+                
                     # Split middle into Part No and Description
                     if "\t" in middle:
                         parts = middle.split("\t")
@@ -255,27 +282,32 @@ def parse_packing_list(pdf_path: str):
                     continue
                 
                 # Check if it starts with Line Number
-                item_start_match = re.match(r"^(\d+\.\d+)\s+(.+)$", line)
-                if item_start_match and len(item_start_match.group(1).split('.')[0]) <= 3:
-                    line_no = item_start_match.group(1)
-                    rest = item_start_match.group(2).strip()
-                    rest = rest.replace("(cid:9)", "\t")
-                    
-                    # Match [SerialNo or N/A] [Qty] [NetW] at the end
-                    end_match = re.search(r"\s+(\S+)\s+(\d+)\s+([\d,]+\.?\d*)$", rest)
-                    if end_match:
-                        net_w_raw = end_match.group(3).replace(",", "")
-                        try:
-                            net_w = float(net_w_raw)
-                            # Display integer if decimal is 0
-                            if net_w.is_integer():
-                                net_w = int(net_w)
-                        except ValueError:
-                            net_w = net_w_raw
-                            
-                        items[line_no] = {
-                            "net_w": net_w
-                        }
+                item_start_match = re.match(r"^(\d+[.,]\d+)\s+(.+)$", line)
+                if item_start_match:
+                    line_no_raw = item_start_match.group(1)
+                    if len(re.split(r'[.,]', line_no_raw)[0]) <= 3:
+                        line_no = line_no_raw.replace(',', '.')
+                        rest = item_start_match.group(2).strip()
+                        rest = rest.replace("(cid:9)", "\t")
+                        
+                        # Match [SerialNo or N/A] [Qty] [optional NetW] at the end
+                        end_match = re.search(r"\s+(\S+)\s+(\d+)(?:\s+([\d,]+\.?\d*))?$", rest)
+                        if end_match:
+                            if end_match.group(3):
+                                net_w_raw = end_match.group(3).replace(",", "")
+                                try:
+                                    net_w = float(net_w_raw)
+                                    # Display integer if decimal is 0
+                                    if net_w.is_integer():
+                                        net_w = int(net_w)
+                                except ValueError:
+                                    net_w = net_w_raw
+                            else:
+                                net_w = ""
+                                
+                            items[line_no] = {
+                                "net_w": net_w
+                            }
                     continue
     return items
 

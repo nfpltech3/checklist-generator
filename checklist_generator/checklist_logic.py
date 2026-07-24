@@ -59,7 +59,9 @@ def log_audit_action(url: str, cred_path: str, user: str, importer: str, models:
         try:
             worksheet = spreadsheet.worksheet("Audit_Log")
         except gspread.exceptions.WorksheetNotFound:
-            raise Exception("Audit_Log sheet not found in the Google Sheet.")
+            audit_headers = ["Timestamp", "User", "Action", "Importer", "Models", "Field_Changed", "Old_Value", "New_Value"]
+            worksheet = spreadsheet.add_worksheet(title="Audit_Log", rows=1000, cols=len(audit_headers))
+            worksheet.append_row(audit_headers, value_input_option='USER_ENTERED')
             
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         models_str = ", ".join([str(m) for m in models])

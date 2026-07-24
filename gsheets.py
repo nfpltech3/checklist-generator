@@ -102,10 +102,10 @@ class GSheetsClient:
         headers = df.columns.tolist() if not df.empty else ["Model", "Product Desc", "Country of Origin", "Generic Description", "Importer", "Added_By", "Added_At", "Status"]
         
         # Check for existing pending items to avoid duplicates
-        # We consider a duplicate if Model + Importer match and Status is 'Pending'
+        # We consider a duplicate if Model + Importer match and Status is not 'Updated to Master'
         existing_pending = set()
         if not df.empty:
-            pending_df = df[df['Status'].str.strip().str.lower() == 'pending']
+            pending_df = df[df['Status'].str.strip().str.lower() != 'updated to master']
             for _, row in pending_df.iterrows():
                 existing_pending.add((str(row.get('Model', '')).strip().lower(), str(row.get('Importer', '')).strip().lower()))
                 
@@ -121,9 +121,49 @@ class GSheetsClient:
         if new_sheet_rows:
             self.append_rows(ws, new_sheet_rows)
 
+    def update_pending_model_row(self, url: str, model: str, importer: str, updates_dict: dict):
+        """
+        Update specific fields of a pending model in the Pending_Model_Approval sheet.
+        Finds the row where Model and Importer match and Status is not 'Updated to Master'.
+        """
+        try:
+            df, ws = self.get_sheet_data(url, "Pending_Model_Approval")
+        except Exception as e:
+            print(f"Failed to fetch for update_pending_model_row: {e}")
+            return
+            
+        if df.empty:
+            return
+            
+        m_lower = str(model).strip().lower()
+        imp_lower = str(importer).strip().lower()
+        
+        # Find row to update
+        target_idx = None
+        for idx, row in df.iterrows():
+            if str(row.get('Status', '')).strip().lower() != 'updated to master':
+                if str(row.get('Model', '')).strip().lower() == m_lower and str(row.get('Importer', '')).strip().lower() == imp_lower:
+                    target_idx = idx
+                    break
+                    
+        if target_idx is None:
+            return
+            
+        sheet_row = target_idx + 2 # 0-indexed idx -> 2-indexed sheet row (1 for header + 1 for idx offset)
+        
+        updates = []
+        for col_name, value in updates_dict.items():
+            for i, col in enumerate(df.columns):
+                if str(col).strip().lower() == str(col_name).strip().lower():
+                    updates.append({'row': sheet_row, 'col': i + 1, 'value': value})
+                    break
+                    
+        if updates:
+            self.update_cells(ws, updates)
+
     def mark_pending_model_resolved(self, url: str, model: str, importer: str):
         """
-        Mark a pending model as Resolved in the Pending_Model_Approval sheet.
+        Mark a pending model as Updated to Master in the Pending_Model_Approval sheet.
         """
         try:
             df, ws = self.get_sheet_data(url, "Pending_Model_Approval")
@@ -147,11 +187,12 @@ class GSheetsClient:
             
         updates = []
         for idx, row in df.iterrows():
-            if str(row.get('Status', '')).strip().lower() == 'pending':
+            status = str(row.get('Status', '')).strip().lower()
+            if status != 'updated to master' and status != 'resolved':
                 if str(row.get('Model', '')).strip().lower() == m_lower and str(row.get('Importer', '')).strip().lower() == imp_lower:
                     # idx is 0-based for df, meaning row 2 in sheet (since row 1 is header)
                     sheet_row = idx + 2
-                    updates.append({'row': sheet_row, 'col': status_col_idx, 'value': 'Resolved'})
+                    updates.append({'row': sheet_row, 'col': status_col_idx, 'value': 'Updated to Master'})
                     
         if updates:
             self.update_cells(ws, updates)

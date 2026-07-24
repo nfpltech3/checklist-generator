@@ -67,8 +67,16 @@ def authenticate_user(url: str, cred_path: str, username: str, password: str):
         if 'Can_Add_Edit_Model' in user_record.index:
             can_add_edit = str(user_record['Can_Add_Edit_Model']).strip().upper() == 'Y'
             
+        can_approve = False
+        if 'Can_Approve_Model' in user_record.index:
+            can_approve = str(user_record['Can_Approve_Model']).strip().upper() == 'Y'
+            
         # Authentication successful
-        set_current_session({'Username': username, 'Can_Add_Edit_Model': can_add_edit})
+        set_current_session({
+            'Username': username, 
+            'Can_Add_Edit_Model': can_add_edit,
+            'Can_Approve_Model': can_approve
+        })
         return True, "Login successful."
         
     except Exception as e:

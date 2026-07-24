@@ -11,7 +11,8 @@ PENDING_HEADERS = [
     "Customs Health Cess Notn", "Customs Health Cess SNo", "Customs Health Cess Rate", 
     "SWS Notification", "SWS Notification SrNo", "SWS Rate", "IGST Notification", 
     "IGST Notification SrNo", "IGST Rate", "AIDC Notn (Customs)", "AIDC Notn Sr.No.(Customs)", 
-    "End Use", "Generic Description", "Added_By", "Added_At", "Importer"
+    "End Use", "Generic Description", "Added_By", "Added_At", "Importer",
+    "Status", "Reviewed_By", "Reviewed_At", "Reviewer_Remarks"
 ]
 
 MASTER_SHEET_COLUMNS = [
@@ -87,13 +88,7 @@ def _brand_button(parent, text: str, command, state=tk.NORMAL, bg_color=_PRIMARY
 
 def align_sheet_columns(sheet, headers):
     for idx, header in enumerate(headers):
-        h_clean = str(header).strip().lower()
-        if any(term in h_clean for term in ["qty", "quantity", "rate", "amount", "sno", "srno", "price", "duty", "val"]):
-            sheet.align_columns(columns=idx, align="e")
-        elif any(term in h_clean for term in ["desc", "model", "generic", "use", "brand", "importer", "country"]):
-            sheet.align_columns(columns=idx, align="w")
-        else:
-            sheet.align_columns(columns=idx, align="center")
+        sheet.align_columns(columns=idx, align="center")
 
 def get_flexible(d, key):
     """Retrieves dict values matching key case-insensitively and stripped of whitespace."""
@@ -304,7 +299,25 @@ class ChecklistApp:
             importer_combo.set("Select Importer...")
         importer_combo.pack(anchor='w')
         
-        # Right Side: Actions
+        # Third Column: Search Master Sheet
+        search_ctrl = tk.Frame(ctrl_wrapper, bg=_PANEL_WHITE, padx=16, pady=16)
+        search_ctrl.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        tk.Label(search_ctrl, text="Search Master Sheet:", font=("Segoe UI", 9, "bold"), fg=_MUTED_GRAY, bg=_PANEL_WHITE).pack(anchor='w', pady=(0,4))
+        
+        search_input_row = tk.Frame(search_ctrl, bg=_PANEL_WHITE)
+        search_input_row.pack(fill=tk.X)
+        
+        self.search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_input_row, textvariable=self.search_var, width=25)
+        search_entry.pack(side=tk.LEFT, padx=(0,10))
+        
+        # We define _do_master_search later or pass a lambda that calls it
+        search_btn = _brand_button(search_input_row, "🔍 Search", lambda: self._do_master_search())
+        search_btn.pack(side=tk.LEFT)
+        search_entry.bind('<Return>', lambda e: self._do_master_search())
+
+        # Middle Column: Actions
         right_ctrl = tk.Frame(ctrl_wrapper, bg=_PANEL_WHITE, padx=16, pady=16)
         right_ctrl.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -376,12 +389,13 @@ class ChecklistApp:
                         self.session_queue = []
                         self.root.after(0, self.show_builder_screen)
                     except Exception as e:
+                        err_str = str(e)
                         def handle_error(err):
                             messagebox.showerror("Error", f"Failed to load data:\n{err}")
                             self.importer = None
                             self.importer_df = None
                             self.show_builder_screen()
-                        self.root.after(0, lambda: handle_error(str(e)))
+                        self.root.after(0, lambda err=err_str: handle_error(err))
                         
                 threading.Thread(target=load_df_thread, daemon=True).start()
                 
@@ -973,7 +987,16 @@ class ChecklistApp:
             if table_start_row == -1 or model_col == -1:
                 self.root.config(cursor="")
                 self.status_label.config(text="")
-                messagebox.showerror("Error", "Could not find 'PART NO.' and 'DESCRIPTION' in Advics invoice.")
+                messagebox.showerror(
+                    "Missing Required Headers",
+                    "Could not find required item table headers in the Advics invoice.\n\n"
+                    "The tool was searching for the following column names:\n"
+                    "  • Model / Part No: 'PART NO.'\n"
+                    "  • Description: 'DESCRIPTION'\n"
+                    "  • Quantity: 'Qty'\n"
+                    "  • Unit Price: 'Unit Price' (or 'Unit Price (THB)')\n\n"
+                    "Please check your Excel file and ensure these header names are present."
+                )
                 return
 
             target_to_col_idx = {}
@@ -1041,21 +1064,21 @@ class ChecklistApp:
         def _parse_arjo_invoice(invoice_df):
             import pandas as pd
             import re
-            inv_no, inv_date = "", ""
+            inv_no, inv_date, header_coo = "", "", ""
             
             for r in range(min(50, len(invoice_df))):
                 for c in range(len(invoice_df.columns)):
                     val = str(invoice_df.iat[r, c]).strip()
-                    if "Invoice No." in val:
-                        match = re.search(r'Invoice No\.\s*(\S+)', val, re.IGNORECASE)
-                        if match:
-                            inv_no = match.group(1)
+                    if "Invoice No." in val or "Invoice No" in val:
+                        match = re.search(r'Invoice No\.?\s*(\S+)', val, re.IGNORECASE)
+                        if match and match.group(1).strip():
+                            inv_no = match.group(1).strip()
                         else:
                             for c_next in range(c + 1, len(invoice_df.columns)):
                                 if pd.notna(invoice_df.iat[r, c_next]) and str(invoice_df.iat[r, c_next]).strip():
                                     inv_no = str(invoice_df.iat[r, c_next]).strip()
                                     break
-                    elif "Invoice date :" in val:
+                    elif "Invoice date :" in val or "Invoice date" in val:
                         match = re.search(r'Invoice date\s*:\s*(.*)', val, re.IGNORECASE)
                         d_val = ""
                         if match and match.group(1).strip():
@@ -1074,6 +1097,15 @@ class ChecklistApp:
                                     inv_date = parsed_date.strftime('%d-%m-%Y')
                                 except:
                                     inv_date = str(d_val).strip()
+                    elif "Country Of Origin" in val or "Country of Origin" in val:
+                        match = re.search(r'Country\s+Of\s+Origin\s*:\s*(.*)', val, re.IGNORECASE)
+                        if match and match.group(1).strip():
+                            header_coo = match.group(1).strip()
+                        else:
+                            for c_next in range(c + 1, len(invoice_df.columns)):
+                                if pd.notna(invoice_df.iat[r, c_next]) and str(invoice_df.iat[r, c_next]).strip():
+                                    header_coo = str(invoice_df.iat[r, c_next]).strip()
+                                    break
 
             table_start_row = -1
             model_col, desc_col, qty_col, price_col, coo_col = -1, -1, -1, -1, -1
@@ -1081,15 +1113,15 @@ class ChecklistApp:
             
             for r in range(len(invoice_df)):
                 row_vals = [str(x).strip() for x in invoice_df.iloc[r] if pd.notna(x)]
-                if "Part No" in row_vals and "Qty" in row_vals:
+                if "Part No" in row_vals and any(q in row_vals for q in ["Qty", "Quantity"]):
                     table_start_row = r
                     for c in range(len(invoice_df.columns)):
                         val = str(invoice_df.iat[r, c]).strip()
                         if val == "Part No": model_col = c
                         elif "Product Description" in val or "Product Desc" in val: desc_col = c
-                        elif val == "Qty": qty_col = c
-                        elif val == "Country Of Origin": coo_col = c
-                        elif "Price" in val:
+                        elif val in ("Qty", "Quantity"): qty_col = c
+                        elif "Country Of Origin" in val or "Country of Origin" in val: coo_col = c
+                        elif "Price" in val or "Rate" in val:
                             price_col = c
                             match = re.search(r'\((.*?)\)', val)
                             if match:
@@ -1099,7 +1131,16 @@ class ChecklistApp:
             if table_start_row == -1 or model_col == -1:
                 self.root.config(cursor="")
                 self.status_label.config(text="")
-                messagebox.showerror("Error", "Could not find 'Part No' and 'Qty' in Arjo invoice.")
+                messagebox.showerror(
+                    "Missing Required Headers",
+                    "Could not find required item table headers in the Arjo invoice.\n\n"
+                    "The tool was searching for the following column names:\n"
+                    "  • Model / Part No: 'Part No'\n"
+                    "  • Quantity: 'Qty' or 'Quantity'\n"
+                    "  • Description: 'Product Description' or 'Product Desc'\n"
+                    "  • Price: 'Price' or 'Per Unit Price'\n\n"
+                    "Please check your Excel file and ensure these header names are present."
+                )
                 return
 
             target_to_col_idx = {}
@@ -1120,13 +1161,23 @@ class ChecklistApp:
                     continue
                     
                 model_val = str(invoice_df.iat[r, model_col]).strip()
-                if not model_val or model_val.lower() == 'nan':
+                if not model_val or model_val.lower() in ('nan', 'total', 'part no'):
                     continue
+                if 'total' in model_val.lower():
+                    break
                     
                 qty_val = str(invoice_df.iat[r, qty_col]).strip() if qty_col != -1 and pd.notna(invoice_df.iat[r, qty_col]) else ""
                 desc_val = str(invoice_df.iat[r, desc_col]).strip() if desc_col != -1 and pd.notna(invoice_df.iat[r, desc_col]) else ""
                 price_val = str(invoice_df.iat[r, price_col]).strip() if price_col != -1 and pd.notna(invoice_df.iat[r, price_col]) else ""
                 coo_val = str(invoice_df.iat[r, coo_col]).strip() if coo_col != -1 and pd.notna(invoice_df.iat[r, coo_col]) else ""
+                if not coo_val:
+                    coo_val = header_coo
+                    
+                if qty_val.lower() == 'nan': qty_val = ""
+                if desc_val.lower() == 'nan': desc_val = ""
+                if price_val.lower() == 'nan': price_val = ""
+                if coo_val.lower() == 'nan': coo_val = ""
+                
                 unit_val = "NOS"
                 
                 prefilled = {
@@ -1608,48 +1659,56 @@ class ChecklistApp:
             
         self.missing_sheet.set_column_widths(missing_widths)
         
-        # Hide the Importer column from the UI
-        if "Importer" in PENDING_HEADERS:
-            self.missing_sheet.hide_columns(columns=[PENDING_HEADERS.index("Importer")])
+        # Hide Importer, Added_By, and Added_At columns from the UI
+        cols_to_hide = []
+        for col_name in ["Importer", "Added_By", "Added_At"]:
+            if col_name in PENDING_HEADERS:
+                cols_to_hide.append(PENDING_HEADERS.index(col_name))
+        if cols_to_hide:
+            self.missing_sheet.hide_columns(columns=cols_to_hide)
         
-        # Enable editing if allowed
-        if not can_add:
-            self.missing_sheet.enable_bindings(
-                "single_select",
-                "row_select",
-                "column_width_resize",
-                "row_height_resize",
-                "arrowkeys",
-                "copy",
-                "rc_select"
-            )
-        else:
-            self.missing_sheet.enable_bindings(
-                "edit_cell",
-                "single_select",
-                "row_select",
-                "column_width_resize",
-                "row_height_resize",
-                "arrowkeys",
-                "copy",
-                "rc_select",
-                "paste",
-                "delete",
-                "undo"
-            )
+        # Enable editing globally. We enforce permissions in the event handlers.
+        self.missing_sheet.enable_bindings(
+            "edit_cell",
+            "single_select",
+            "drag_select",
+            "select_all",
+            "column_select",
+            "row_select",
+            "column_width_resize",
+            "row_height_resize",
+            "arrowkeys",
+            "copy",
+            "cut",
+            "paste",
+            "delete",
+            "undo",
+            "rc_select"
+        )
+        self.missing_sheet.extra_bindings("end_edit_cell", self._on_missing_cell_edited)
+        self.missing_sheet.extra_bindings("begin_edit_cell", self._on_missing_begin_edit)
+        self.missing_sheet.extra_bindings("end_paste", self._on_missing_paste)
+        self.missing_sheet.extra_bindings("rc_select", self._on_missing_rc_select)
             
-        # Context columns are always read-only: Importer (0), Added_By (1), Added_At (2), Model (3), Product Desc (4), Country of Origin (5)
-        self.missing_sheet.readonly_columns(columns=[0, 1, 2, 3, 4, 5], readonly=True)
+        # Context columns are always read-only: Importer, Added_By, Added_At, Model, Country of Origin
+        context_cols = ["Importer", "Added_By", "Added_At", "Model", "Country of Origin"]
+        readonly_indices = [PENDING_HEADERS.index(c) for c in context_cols if c in PENDING_HEADERS]
+        self.missing_sheet.readonly_columns(columns=readonly_indices, readonly=True)
             
         # Tab Actions Frame (aligned with the Notebook tabs on the top right)
         self.tab_actions_frame = tk.Frame(notebook_container, bg=_LIGHT_BG)
         self.tab_actions_frame.place(relx=1.0, x=-10, y=2, anchor="ne")
         
         self.btn_recheck = _brand_button(self.tab_actions_frame, "🔄 Re-check Models", self._do_recheck_models, secondary=True)
+        self.btn_download_missing = _brand_button(self.tab_actions_frame, "📊 Export Excel", self._do_export_missing_excel, secondary=True)
         self.btn_submit_master = _brand_button(self.tab_actions_frame, "📤 Update Master Sheet", self._do_submit_master, bg_color=_PRIMARY_BLUE)
+        self.btn_send_review = _brand_button(self.tab_actions_frame, "📤 Send for Review", self._do_send_for_review, bg_color=_PRIMARY_BLUE)
         
-        if not can_add:
+        can_approve = session.get('Can_Approve_Model', False) if isinstance(session, dict) else False
+        
+        if not can_add and not can_approve:
             self.btn_submit_master.config(state="disabled", bg="#9CA3AF")
+            self.btn_send_review.config(state="disabled", bg="#9CA3AF")
             self.view_only_label = tk.Label(self.tab_actions_frame, text="(View Only - No Permission)", fg="#DC2626", bg=_LIGHT_BG, font=("Segoe UI", 9, "bold"))
         else:
             self.view_only_label = None
@@ -1660,14 +1719,25 @@ class ChecklistApp:
             
             # Hide all
             self.btn_recheck.pack_forget()
+            self.btn_download_missing.pack_forget()
             self.btn_submit_master.pack_forget()
+            self.btn_send_review.pack_forget()
             if self.view_only_label:
                 self.view_only_label.pack_forget()
                 
             if "Checklist Preview" in tab_text:
                 self.btn_recheck.pack(side=tk.RIGHT)
             else:
-                self.btn_submit_master.pack(side=tk.RIGHT)
+                session = auth.get_current_session()
+                can_approve = session.get('Can_Approve_Model', False) if isinstance(session, dict) else False
+                can_add = session.get('Can_Add_Edit_Model', False) if isinstance(session, dict) else False
+                
+                if can_approve:
+                    self.btn_submit_master.pack(side=tk.RIGHT)
+                elif can_add:
+                    self.btn_send_review.pack(side=tk.RIGHT)
+                    
+                self.btn_download_missing.pack(side=tk.RIGHT, padx=(0, 5))
                 if self.view_only_label:
                     self.view_only_label.pack(side=tk.RIGHT, padx=(0, 10))
                     
@@ -1799,27 +1869,21 @@ class ChecklistApp:
         self.notebook.tab(1, text=f"Models Not Found ({missing_count})")
         
         export_blocked = False
-        try:
-            if hasattr(self, 'session_queue') and missing_count > 0:
-                pending_models_in_sheet = [str(r[PENDING_HEADERS.index("Model")]).strip().lower() for r in missing_rows if any(r)]
-                for item in self.session_queue:
-                    model = item.get('model', '').strip().lower() if isinstance(item, dict) else str(item).strip().lower()
-                    if model in pending_models_in_sheet:
-                        export_blocked = True
-                        break
-        except Exception:
-            pass
-            
         unresolved_models = set(str(row.get('col_24', '')).strip().lower() for row in self.rows_data if row.get('_unresolved_group'))
         unresolved_count = len(unresolved_models)
+        
+        missing_models_in_master = set(str(row.get('col_24', '')).strip().lower() for row in self.rows_data if row.get('_missing_master'))
+        actual_missing_count = len(missing_models_in_master)
         
         if hasattr(self, 'lbl_unresolved_count'):
             if unresolved_count > 0:
                 self.lbl_unresolved_count.config(text=f"⚠ {unresolved_count} model(s) need conflict resolution")
+            elif actual_missing_count > 0:
+                self.lbl_unresolved_count.config(text=f"⚠ {actual_missing_count} model(s) not in master sheet (export disabled)")
             else:
                 self.lbl_unresolved_count.config(text="")
                 
-        if unresolved_count > 0:
+        if unresolved_count > 0 or actual_missing_count > 0:
             export_blocked = True
         
         if missing_count == 0:
@@ -2037,7 +2101,7 @@ class ChecklistApp:
                             "Importer": self.importer,
                             "Added_By": username,
                             "Added_At": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            "Status": "Pending"
+                            "Status": "Draft"
                         }
                         pending_rows.append(pr)
                         
@@ -2098,7 +2162,7 @@ class ChecklistApp:
         if not has_coo_mapping and 'col_32' not in prefilled:
             row_data['col_32'] = ""
             
-        if self.importer and self.importer.strip().upper() == 'BBRAUN':
+        if self.importer and self.importer.strip().upper() in ('BBRAUN', 'AVIAT'):
             row_data['col_12'] = "NOEXCISE"
             row_data['col_39'] = "N"
             
@@ -2175,11 +2239,21 @@ class ChecklistApp:
             messagebox.showerror("Error", "No rows added to the checklist.")
             return
             
-        for row in self.rows_data:
-            if row.get('_unresolved_group') or row.get('_awaiting_resolution'):
-                messagebox.showerror("Validation Error", "You have unresolved model conflicts (highlighted in yellow).\nRight click the correct candidate row and select '✅ Resolve Conflict: Keep this row'.")
-                return
+        if not (self.importer and self.importer.strip().lower() == 'aviat'):
+            for row in self.rows_data:
+                if row.get('_unresolved_group') or row.get('_awaiting_resolution'):
+                    messagebox.showerror("Validation Error", "You have unresolved model conflicts (highlighted in yellow).\nRight click the correct candidate row and select '✅ Resolve Conflict: Keep this row'.")
+                    return
                 
+        missing_models = set(str(row.get('col_24', '')).strip() for row in self.rows_data if row.get('_missing_master'))
+        n_missing = len(missing_models)
+        if n_missing > 0:
+            messagebox.showerror(
+                "Missing Models",
+                f"{n_missing} model(s) are not present in the master sheet. Generate CSV is disabled until all models are properly written to the master sheet."
+            )
+            return
+            
         default_name = f"checklist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         p = filedialog.asksaveasfilename(
             defaultextension=".csv", 
@@ -2202,6 +2276,282 @@ class ChecklistApp:
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export template: {str(e)}")
 
+    def _do_export_missing_excel(self):
+        missing_rows = self.missing_sheet.get_sheet_data()
+        valid_rows = [r for r in missing_rows if any(str(x).strip() for x in r)]
+        if not valid_rows:
+            messagebox.showinfo("Info", "No missing models available to export.")
+            return
+            
+        default_name = f"missing_models_{self.importer or 'export'}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        p = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel Files", "*.xlsx")],
+            title="Save Models Not Found Excel",
+            initialfile=default_name
+        )
+        if not p:
+            return
+            
+        try:
+            import openpyxl
+            from openpyxl.styles import PatternFill, Font, Border, Side
+            from openpyxl.utils import get_column_letter
+
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Models Not Found"
+
+            # Exclude Added_By, Added_At, and Importer from export
+            exclude_cols = {"Added_By", "Added_At", "Importer"}
+            export_headers = [h for h in PENDING_HEADERS if h not in exclude_cols]
+
+            # Convert valid_rows into list of dicts for easy column access
+            export_row_dicts = []
+            for r_data in valid_rows:
+                r_dict = {h: r_data[i] if i < len(r_data) else "" for i, h in enumerate(PENDING_HEADERS)}
+                export_row_dicts.append(r_dict)
+
+            # Check which candidate columns are all-empty across all rows
+            highlight_candidate_fields = {"model", "product desc", "cth", "country of origin", "end use", "generic description"}
+            cols_to_highlight = set()
+            for header in export_headers:
+                h_lower = header.strip().lower()
+                if h_lower in highlight_candidate_fields:
+                    is_all_empty = all(not str(r_dict.get(header, '')).strip() for r_dict in export_row_dicts)
+                    if not is_all_empty:
+                        cols_to_highlight.add(h_lower)
+
+            # Required headers to highlight in soft blue
+            req_headers = {
+                "Model", "Product Desc", "Country of Origin", "CTH", "End Use", "Generic Description",
+                "Basic Duty Notn", "Basic Duty Notn SNo", "Basic Duty Rate",
+                "Customs Health Cess Notn", "Customs Health Cess SNo", "Customs Health Cess Rate",
+                "SWS Notification", "SWS Notification SrNo", "SWS Rate",
+                "IGST Notification", "IGST Notification SrNo", "IGST Rate",
+                "AIDC Notn (Customs)", "AIDC Notn Sr.No.(Customs)"
+            }
+
+            req_header_fill = PatternFill(start_color="BFDBFE", end_color="BFDBFE", fill_type="solid")
+            default_header_fill = PatternFill(start_color="F3F4F6", end_color="F3F4F6", fill_type="solid")
+            header_font = Font(name="Segoe UI", size=10, bold=True, color="1F3F6E")
+            thin_border = Border(
+                left=Side(style='thin', color='E5E7EB'),
+                right=Side(style='thin', color='E5E7EB'),
+                top=Side(style='thin', color='E5E7EB'),
+                bottom=Side(style='thin', color='E5E7EB')
+            )
+
+            ws.append(export_headers)
+            for col_idx, header in enumerate(export_headers, 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.font = header_font
+                cell.border = thin_border
+                if header.strip() in req_headers:
+                    cell.fill = req_header_fill
+                else:
+                    cell.fill = default_header_fill
+
+            yellow_fill = PatternFill(start_color="FEF08A", end_color="FEF08A", fill_type="solid")
+
+            for r_dict in export_row_dicts:
+                row_data = [r_dict.get(h, "") for h in export_headers]
+                ws.append(row_data)
+                current_row = ws.max_row
+                for col_idx, header in enumerate(export_headers, 1):
+                    cell = ws.cell(row=current_row, column=col_idx)
+                    cell.border = thin_border
+                    val_str = str(cell.value or '').strip()
+                    if header.strip().lower() in cols_to_highlight and not val_str:
+                        cell.fill = yellow_fill
+
+            for col in ws.columns:
+                max_len = max(len(str(cell.value or '')) for cell in col)
+                col_letter = get_column_letter(col[0].column)
+                ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
+            wb.save(p)
+            messagebox.showinfo("Success", f"Models Not Found table exported successfully to Excel:\n{p}")
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export Excel file: {str(e)}")
+
+    def _do_master_search(self):
+        query = self.search_var.get().strip() if hasattr(self, 'search_var') else ""
+        if not query:
+            messagebox.showinfo("Search Master Sheet", "Please enter a search keyword or CTH in the 'Search Master Sheet:' box above.")
+            return
+
+        if not hasattr(self, 'importer_df') or self.importer_df is None or self.importer_df.empty:
+            messagebox.showinfo("Search Master Sheet", f"No master sheet data loaded for importer '{self.importer or 'Unknown'}'.")
+            return
+
+        query_lower = query.lower()
+        df = self.importer_df.copy()
+
+        def matches(row):
+            m = str(row.get('Model', '')).lower()
+            d = str(row.get('Product Desc', '')).lower()
+            c = str(row.get('CTH', '')).lower()
+            g = str(row.get('Generic Description', '')).lower()
+            return (query_lower in m) or (query_lower in d) or (query_lower in c) or (query_lower in g)
+
+        matched_df = df[df.apply(matches, axis=1)]
+        rows_data = []
+        for _, row in matched_df.iterrows():
+            r_vals = [str(row.get(h, '')).strip() for h in MASTER_SHEET_COLUMNS]
+            rows_data.append(r_vals)
+
+        popup = tk.Toplevel(self.root)
+        self._search_popup = popup
+        popup.title(f"Search Results for '{query}' - {self.importer or 'Master Sheet'}")
+        popup.geometry("980x560")
+        popup.configure(bg="#F4F6F8")
+
+        # Dark navy header banner matching user screenshot
+        header_banner = tk.Frame(popup, bg="#1F3F6E", height=48)
+        header_banner.pack(fill=tk.X)
+        header_banner.pack_propagate(False)
+
+        lbl_header = tk.Label(
+            header_banner,
+            text=f"🔍 Found {len(rows_data)} matching rows",
+            font=("Segoe UI", 11, "bold"),
+            fg="#FFFFFF",
+            bg="#1F3F6E"
+        )
+        lbl_header.pack(side=tk.LEFT, padx=16, pady=10)
+
+        # Table Container
+        table_container = tk.Frame(popup, bg=_PANEL_WHITE)
+        table_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        popup_sheet = Sheet(
+            table_container,
+            headers=[wrap_header(h) for h in MASTER_SHEET_COLUMNS],
+            empty_horizontal=0,
+            empty_vertical=0,
+            show_row_index=True,
+            show_column_header=True,
+            row_height=28
+        )
+        popup_sheet.set_header_height_lines(1)
+        popup_sheet.set_sheet_data(rows_data)
+        popup_sheet.pack(fill=tk.BOTH, expand=True)
+
+        popup_sheet.enable_bindings(
+            "single_select",
+            "drag_select",
+            "select_all",
+            "column_select",
+            "row_select",
+            "column_width_resize",
+            "row_height_resize",
+            "arrowkeys",
+            "copy",
+            "rc_select"
+        )
+        popup_sheet.readonly_columns(columns=list(range(len(MASTER_SHEET_COLUMNS))), readonly=True)
+
+        # Bottom Action Bar
+        bottom_bar = tk.Frame(popup, bg="#F4F6F8")
+        bottom_bar.pack(fill=tk.X, padx=16, pady=(0, 12))
+
+        def apply_selected_row_as_template():
+            selected_popup_rows = popup_sheet.get_selected_rows()
+            sheet_data = popup_sheet.get_sheet_data()
+            if not selected_popup_rows or not sheet_data:
+                messagebox.showinfo("Select Row", "Please click/select a row in the search results table first.", parent=popup)
+                return
+
+            p_idx = list(selected_popup_rows)[0]
+            if p_idx >= len(sheet_data):
+                return
+            row_vals = sheet_data[p_idx]
+            master_rec = {h: row_vals[i] for i, h in enumerate(MASTER_SHEET_COLUMNS)}
+
+            self._apply_template_to_selected_row(master_rec)
+
+        btn_use_template = tk.Button(
+            bottom_bar,
+            text="📋 Use Selected Row as Template",
+            font=("Segoe UI", 9, "bold"),
+            fg="white",
+            bg="#1F3F6E",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=12,
+            pady=4,
+            command=apply_selected_row_as_template
+        )
+        btn_use_template.pack(side=tk.LEFT)
+
+        btn_close = tk.Button(
+            bottom_bar,
+            text="Close",
+            font=("Segoe UI", 9),
+            fg="#374151",
+            bg="#E5E7EB",
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=16,
+            pady=4,
+            command=popup.destroy
+        )
+        btn_close.pack(side=tk.RIGHT)
+
+    def _apply_template_to_selected_row(self, master_record):
+        if not hasattr(self, 'missing_sheet') or not self.missing_sheet.winfo_exists():
+            return
+
+        selected_rows = self.missing_sheet.get_selected_rows()
+        all_sheet_data = self.missing_sheet.get_sheet_data()
+
+        if selected_rows:
+            target_indices = sorted(list(selected_rows))
+        else:
+            valid_indices = [i for i, r in enumerate(all_sheet_data) if any(str(x).strip() for x in r)]
+            target_indices = [valid_indices[0]] if valid_indices else []
+
+        if not target_indices:
+            messagebox.showinfo("Select Row", "Please click/select a row in the Models Not Found table to apply this template.")
+            return
+
+        template_fields = {
+            "CTH": master_record.get("CTH", ""),
+            "Basic Duty Notn": master_record.get("Basic Duty Notn", ""),
+            "Basic Duty Notn SNo": master_record.get("Basic Duty Notn SNo", ""),
+            "Basic Duty Rate": master_record.get("Basic Duty Rate", ""),
+            "Customs Health Cess Notn": master_record.get("Customs Health Cess Notn", ""),
+            "Customs Health Cess SNo": master_record.get("Customs Health Cess SNo", ""),
+            "Customs Health Cess Rate": master_record.get("Customs Health Cess Rate", ""),
+            "SWS Notification": master_record.get("SWS Notification", ""),
+            "SWS Notification SrNo": master_record.get("SWS Notification SrNo", ""),
+            "SWS Rate": master_record.get("SWS Rate", ""),
+            "IGST Notification": master_record.get("IGST Notification", ""),
+            "IGST Notification SrNo": master_record.get("IGST Notification SrNo", ""),
+            "IGST Rate": master_record.get("IGST Rate", ""),
+            "AIDC Notn (Customs)": master_record.get("AIDC Notn (Customs)", ""),
+            "AIDC Notn Sr.No.(Customs)": master_record.get("AIDC Notn Sr.No.(Customs)", ""),
+            "End Use": master_record.get("End Use", ""),
+            "Generic Description": master_record.get("Generic Description", "")
+        }
+
+        model_ref = str(master_record.get("Model", "")).strip()
+
+        for r_idx in target_indices:
+            for field_name, val in template_fields.items():
+                if field_name in PENDING_HEADERS:
+                    c_idx = PENDING_HEADERS.index(field_name)
+                    self.missing_sheet.set_cell_data(r_idx, c_idx, str(val or '').strip(), redraw=False)
+
+        self.missing_sheet.redraw()
+
+        row_str = ", ".join([str(i+1) for i in target_indices])
+        self.search_status_lbl.config(
+            text=f"✓ Applied template '{model_ref}' to row(s) {row_str}.",
+            fg="#10B981"
+        )
+
     def _refresh_pending_tab(self):
         if not self.importer:
             return
@@ -2219,8 +2569,9 @@ class ChecklistApp:
                 
                 rows_to_show = []
                 if not df.empty:
-                    # Filter by status and importer
-                    pending_df = df[(df['Status'].str.strip().str.lower() == 'pending') & (df['Importer'].str.strip() == self.importer)]
+                    # Filter by relevant statuses and importer
+                    valid_statuses = {'draft', 'sent for review', 'need correction', 'approved', 'rejected', 'pending'}
+                    pending_df = df[(df['Status'].str.strip().str.lower().isin(valid_statuses)) & (df['Importer'].str.strip() == self.importer)]
                     for _, row in pending_df.iterrows():
                         r_data = []
                         for h in PENDING_HEADERS:
@@ -2237,17 +2588,11 @@ class ChecklistApp:
         if hasattr(self, 'btn_recheck') and self.btn_recheck.winfo_exists():
             self.btn_recheck.config(state="normal")
             
-        session = auth.get_current_session()
-        can_add = session.get('Can_Add_Edit_Model', False) if isinstance(session, dict) else False
-        if can_add and hasattr(self, 'btn_submit_master') and self.btn_submit_master.winfo_exists():
-            self.btn_submit_master.config(state="normal", text="📤 Update Master Sheet (Selected Row)")
+        can_approve = session.get('Can_Approve_Model', False) if isinstance(session, dict) else False
+        if can_approve and hasattr(self, 'btn_submit_master') and self.btn_submit_master.winfo_exists():
+            self.btn_submit_master.config(state="normal", text="📤 Update Master Sheet")
             
-        # If user cannot edit, render duty columns empty to prevent confusion
-        if not can_add:
-            for r in data:
-                # Keep Context columns (0..5), clear the rest (6..)
-                for i in range(6, len(r)):
-                    r[i] = ""
+
                     
         if hasattr(self, 'missing_sheet') and self.missing_sheet.winfo_exists():
             self.missing_sheet.set_sheet_data(data)
@@ -2261,33 +2606,39 @@ class ChecklistApp:
 
     def _do_submit_master(self):
         selected_rows = self.missing_sheet.get_selected_rows()
-        if not selected_rows:
-            messagebox.showerror("Error", "Please select a row to submit.")
+        all_sheet_data = self.missing_sheet.get_sheet_data()
+        
+        # If specific rows are selected, use them; otherwise use all non-empty rows
+        if selected_rows:
+            target_indices = sorted(list(selected_rows))
+        else:
+            target_indices = [i for i, r in enumerate(all_sheet_data) if any(str(x).strip() for x in r)]
+            
+        if not target_indices:
+            messagebox.showerror("Error", "No rows available to submit to Master Sheet.")
             return
             
-        if len(selected_rows) > 1:
-            messagebox.showerror("Error", "Please select only one row at a time to update.")
+        rows_to_process = []
+        for idx in target_indices:
+            if idx < len(all_sheet_data):
+                r_data = all_sheet_data[idx]
+                if any(str(x).strip() for x in r_data):
+                    r_dict = {h: r_data[i] if i < len(r_data) else "" for i, h in enumerate(PENDING_HEADERS)}
+                    rows_to_process.append(r_dict)
+                    
+        if not rows_to_process:
+            messagebox.showerror("Error", "No valid rows found to submit.")
             return
-            
-        row_idx = list(selected_rows)[0]
-        row_data = self.missing_sheet.get_row_data(row_idx)
-        
-        # Convert row data to dict
-        row_dict = {h: row_data[i] for i, h in enumerate(PENDING_HEADERS)}
-        
-        # Ansell specific: Auto-fill Generic Description into the Product Desc template before saving to Master Sheet
-        if self.importer and self.importer.strip().lower() == 'ansell':
-            gen_desc = row_dict.get("Generic Description", "").strip()
-            prod_desc = row_dict.get("Product Desc", "")
-            if gen_desc and " () " in prod_desc:
-                row_dict["Product Desc"] = prod_desc.replace(" () ", f" ({gen_desc}) ")
-        
-        # Validation
-        if not row_dict.get("CTH"):
-            messagebox.showerror("Validation Error", "CTH cannot be empty.")
-            return
-            
-        # Validate Duty pairs (Notification+SrNo OR Rate)
+
+        # Ansell specific: Auto-fill Generic Description into Product Desc template if present
+        for row_dict in rows_to_process:
+            if self.importer and self.importer.strip().lower() == 'ansell':
+                gen_desc = row_dict.get("Generic Description", "").strip()
+                prod_desc = row_dict.get("Product Desc", "")
+                if gen_desc and " () " in prod_desc:
+                    row_dict["Product Desc"] = prod_desc.replace(" () ", f" ({gen_desc}) ")
+
+        # Validation across all rows
         duty_pairs = [
             ("Basic Duty", "Basic Duty Notn", "Basic Duty Notn SNo", "Basic Duty Rate"),
             ("Customs Health Cess", "Customs Health Cess Notn", "Customs Health Cess SNo", "Customs Health Cess Rate"),
@@ -2295,39 +2646,45 @@ class ChecklistApp:
             ("IGST", "IGST Notification", "IGST Notification SrNo", "IGST Rate"),
             ("AIDC", "AIDC Notn (Customs)", "AIDC Notn Sr.No.(Customs)", None)
         ]
-        
-        for d_name, notn_col, srno_col, rate_col in duty_pairs:
-            has_notn = bool(row_dict.get(notn_col))
-            has_srno = bool(row_dict.get(srno_col))
-            has_rate = bool(row_dict.get(rate_col)) if rate_col else False
-            
-            if has_notn or has_srno or has_rate:
-                if rate_col:
-                    if not ((has_notn and has_srno) ^ has_rate):
-                        if not messagebox.askyesno("Duty Validation", f"For {d_name}, you must provide EITHER (Notification + SrNo) OR Rate, not both and not incomplete.\n\nDo you want to proceed anyway?"):
-                            return
-                else:
-                    if has_notn != has_srno:
-                        if not messagebox.askyesno("Duty Validation", f"For {d_name}, you must provide BOTH Notification and SrNo.\n\nDo you want to proceed anyway?"):
-                            return
-                            
-        self.btn_submit_master.config(state="disabled", text="⏳ Updating...")
+
+        for row_dict in rows_to_process:
+            model_name = row_dict.get("Model", "Unknown")
+            if not row_dict.get("CTH"):
+                messagebox.showerror("Validation Error", f"Model '{model_name}' has an empty CTH. CTH cannot be empty.")
+                return
+
+            for d_name, notn_col, srno_col, rate_col in duty_pairs:
+                has_notn = bool(row_dict.get(notn_col))
+                has_srno = bool(row_dict.get(srno_col))
+                has_rate = bool(row_dict.get(rate_col)) if rate_col else False
+                
+                if has_notn or has_srno or has_rate:
+                    if rate_col:
+                        if not ((has_notn and has_srno) ^ has_rate):
+                            if not messagebox.askyesno("Duty Validation", f"For model '{model_name}' ({d_name}), you must provide EITHER (Notification + SrNo) OR Rate.\n\nDo you want to proceed anyway?"):
+                                return
+                    else:
+                        if has_notn != has_srno:
+                            if not messagebox.askyesno("Duty Validation", f"For model '{model_name}' ({d_name}), you must provide BOTH Notification and SrNo.\n\nDo you want to proceed anyway?"):
+                                return
+
+        self.btn_submit_master.config(state="disabled", text=f"⏳ Updating {len(rows_to_process)} model(s)...")
         self.root.config(cursor="watch")
         self.root.update_idletasks()
-        
+
         def submit_thread():
             try:
                 session = auth.get_current_session()
-                if not session or not session.get('Can_Add_Edit_Model', False):
-                    raise Exception("You do not have permission to add/edit models.")
+                if not session or not session.get('Can_Approve_Model', False):
+                    raise Exception("You do not have permission to approve and update the Master Sheet.")
                     
                 from gsheets import GSheetsClient
                 client = GSheetsClient(self.cred_path.get())
                 url = self.gsheets_url.get()
-                
                 sheet_id = client.extract_sheet_id(url)
                 spreadsheet = client.client.open_by_key(sheet_id)
-                importer_name = row_dict.get("Importer")
+
+                importer_name = rows_to_process[0].get("Importer") or self.importer
                 
                 try:
                     worksheet = spreadsheet.worksheet(importer_name)
@@ -2342,33 +2699,508 @@ class ChecklistApp:
                     if live_h != expected_h:
                         raise Exception(f"Master sheet header mismatch at column {pos + 1}.")
                         
-                master_row = [""] * len(MASTER_SHEET_COLUMNS)
-                for h in MASTER_SHEET_COLUMNS:
-                    if h in row_dict:
-                        master_row[MASTER_SHEET_COLUMNS.index(h)] = row_dict[h]
-                        
-                client.append_rows(worksheet, [master_row])
-                checklist_logic.log_audit_action(url, self.cred_path.get(), session, importer_name, [row_dict.get("Model")], action_type="model_added")
-                client.mark_pending_model_resolved(url, row_dict.get("Model"), importer_name)
-                
-                self.root.after(0, lambda: self._on_submit_success())
+                master_rows_to_append = []
+                models_submitted = []
+                for row_dict in rows_to_process:
+                    master_row = [""] * len(MASTER_SHEET_COLUMNS)
+                    for h in MASTER_SHEET_COLUMNS:
+                        if h in row_dict:
+                            master_row[MASTER_SHEET_COLUMNS.index(h)] = row_dict[h]
+                    master_rows_to_append.append(master_row)
+                    models_submitted.append(row_dict.get("Model"))
+
+                client.append_rows(worksheet, master_rows_to_append)
+                checklist_logic.log_audit_action(url, self.cred_path.get(), session, importer_name, models_submitted, action_type="models_added_bulk")
+
+                for m in models_submitted:
+                    client.mark_pending_model_resolved(url, m, importer_name)
+
+                self.root.after(0, lambda count=len(master_rows_to_append): self._on_submit_success(count))
             except Exception as e:
                 self.root.after(0, lambda err=e: self._on_submit_error(err))
-                
+
         threading.Thread(target=submit_thread, daemon=True).start()
-        
-    def _on_submit_success(self):
+
+    def _on_submit_success(self, count=1):
         if hasattr(self, 'btn_submit_master') and self.btn_submit_master.winfo_exists():
-            self.btn_submit_master.config(state="normal", text="📤 Update Master Sheet (Selected Row)")
+            self.btn_submit_master.config(state="normal", text="📤 Update Master Sheet")
         self.root.config(cursor="")
-        messagebox.showinfo("Success", "Successfully appended row to Master Sheet and marked as resolved.")
+        messagebox.showinfo("Success", f"Successfully appended {count} model(s) to Master Sheet and marked as resolved.")
         self._refresh_pending_tab()
-        
+
     def _on_submit_error(self, err):
         if hasattr(self, 'btn_submit_master') and self.btn_submit_master.winfo_exists():
-            self.btn_submit_master.config(state="normal", text="📤 Update Master Sheet (Selected Row)")
+            self.btn_submit_master.config(state="normal", text="📤 Update Master Sheet")
         self.root.config(cursor="")
         messagebox.showerror("Error", f"Failed to submit to master:\n{err}")
+        
+    def _do_send_for_review(self):
+        selected_rows = self.missing_sheet.get_selected_rows()
+        all_sheet_data = self.missing_sheet.get_sheet_data()
+        
+        if selected_rows:
+            target_indices = sorted(list(selected_rows))
+        else:
+            target_indices = [i for i, r in enumerate(all_sheet_data) if any(str(x).strip() for x in r)]
+            
+        if not target_indices:
+            messagebox.showerror("Error", "No rows available to send for review.")
+            return
+            
+        rows_to_process = []
+        for idx in target_indices:
+            if idx < len(all_sheet_data):
+                r_data = all_sheet_data[idx]
+                if any(str(x).strip() for x in r_data):
+                    r_dict = {h: r_data[i] if i < len(r_data) else "" for i, h in enumerate(PENDING_HEADERS)}
+                    status = str(r_dict.get("Status", "")).strip().lower()
+                    if status not in ["draft", "need correction", "pending", ""]:
+                        messagebox.showerror("Error", f"Model '{r_dict.get('Model')}' cannot be sent for review (Status is '{r_dict.get('Status')}').")
+                        return
+                    rows_to_process.append(r_dict)
+                    
+        if not rows_to_process:
+            messagebox.showerror("Error", "No valid rows found to send.")
+            return
+            
+        self.btn_send_review.config(state="disabled", text=f"⏳ Sending {len(rows_to_process)} model(s)...")
+        self.root.config(cursor="watch")
+        self.root.update_idletasks()
+        
+        def send_thread():
+            try:
+                from gsheets import GSheetsClient
+                client = GSheetsClient(self.cred_path.get())
+                url = self.gsheets_url.get()
+                
+                for row_dict in rows_to_process:
+                    client.update_pending_model_row(url, row_dict["Model"], self.importer, {"Status": "Sent for Review"})
+                    
+                self.root.after(0, lambda: self._on_send_success())
+            except Exception as e:
+                self.root.after(0, lambda err=e: self._on_send_error(err))
+                
+        threading.Thread(target=send_thread, daemon=True).start()
+        
+    def _on_send_success(self):
+        if hasattr(self, 'btn_send_review') and self.btn_send_review.winfo_exists():
+            self.btn_send_review.config(state="normal", text="📤 Send for Review")
+        self.root.config(cursor="")
+        messagebox.showinfo("Success", "Successfully sent selected models for review.")
+        self._refresh_pending_tab()
+        
+    def _on_send_error(self, err):
+        if hasattr(self, 'btn_send_review') and self.btn_send_review.winfo_exists():
+            self.btn_send_review.config(state="normal", text="📤 Send for Review")
+        self.root.config(cursor="")
+        messagebox.showerror("Error", f"Failed to send for review:\n{err}")
+        
+    def _on_missing_paste(self, event):
+        """Handle paste (Ctrl+V) into the missing models sheet.
+        Triggers CTH autofill and auto-save for pasted cells."""
+        import traceback as _tb
+        def _dbg(msg):
+            try:
+                with open("autofill_debug.log", "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now().isoformat()} | PASTE: {msg}\n")
+            except Exception:
+                pass
+        
+        try:
+            _dbg(f"Paste event fired. Event keys: {list(event.keys()) if isinstance(event, dict) else 'N/A'}")
+            
+            # After paste, re-read the sheet data to find what changed
+            all_data = self.missing_sheet.get_sheet_data()
+            
+            # Check permissions
+            session = auth.get_current_session()
+            can_add = session.get('Can_Add_Edit_Model', False) if isinstance(session, dict) else False
+            can_approve = session.get('Can_Approve_Model', False) if isinstance(session, dict) else False
+            
+            if not can_add and not can_approve:
+                _dbg("Permission denied")
+                return
+            
+            # Get the cells that were modified by the paste
+            # In tksheet 7.x, event.cells.table is a dict of {(row, col): value}
+            modified_cells = {}
+            if hasattr(event, 'cells') and hasattr(event.cells, 'table'):
+                modified_cells = event.cells.table
+                _dbg(f"Modified cells from event: {dict(modified_cells)}")
+            
+            if not modified_cells:
+                _dbg("No modified cells found in event, scanning selected cells instead")
+                # Fallback: check selected cells
+                try:
+                    selected = self.missing_sheet.get_selected_cells()
+                    if selected:
+                        for (r, c) in selected:
+                            if r < len(all_data) and c < len(all_data[r]):
+                                modified_cells[(r, c)] = all_data[r][c]
+                        _dbg(f"Selected cells fallback: {dict(modified_cells)}")
+                except Exception as e:
+                    _dbg(f"Error getting selected cells: {e}")
+            
+            # CTH column index
+            cth_col_idx = PENDING_HEADERS.index("CTH")
+            _dbg(f"CTH column index: {cth_col_idx}")
+            
+            # Process each modified cell
+            cth_rows_to_autofill = []
+            for (r, c), _old_val in modified_cells.items():
+                if r >= len(all_data):
+                    continue
+                    
+                row_data = all_data[r]
+                r_dict = {h: row_data[i] if i < len(row_data) else "" for i, h in enumerate(PENDING_HEADERS)}
+                
+                model = r_dict.get("Model", "")
+                if not model:
+                    continue
+                
+                col_name = PENDING_HEADERS[c] if c < len(PENDING_HEADERS) else ""
+                # Read the CURRENT value from sheet data (event contains the OLD value)
+                new_val = str(row_data[c]).strip() if c < len(row_data) else ""
+                _dbg(f"Pasted: row={r}, col={c}, col_name='{col_name}', new_value='{new_val}', old_value='{_old_val}', model='{model}'")
+                
+                # Auto-save the pasted value
+                def save_pasted(m=model, cn=col_name, nv=new_val):
+                    try:
+                        from gsheets import GSheetsClient
+                        client = GSheetsClient(self.cred_path.get())
+                        client.update_pending_model_row(self.gsheets_url.get(), m, self.importer, {cn: nv})
+                        _dbg(f"Auto-save success for {cn}={nv}")
+                    except Exception as e:
+                        _dbg(f"Auto-save error: {e}")
+                threading.Thread(target=save_pasted, daemon=True).start()
+                
+                # If CTH was pasted, queue autofill
+                if c == cth_col_idx and new_val:
+                    cth_rows_to_autofill.append((r, model, new_val))
+            
+            # Trigger CTH autofill for pasted CTH values
+            for r, model, cth_val in cth_rows_to_autofill:
+                _dbg(f"Triggering CTH autofill for row={r}, model='{model}', CTH='{cth_val}'")
+                self.root.after(100, lambda ri=r, m=model, cv=cth_val: self._do_cth_autofill(ri, m, cv))
+                
+        except Exception as e:
+            _dbg(f"EXCEPTION: {_tb.format_exc()}")
+
+    def _on_missing_begin_edit(self, event):
+        try:
+            with open("autofill_debug.log", "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat()} | BEGIN_EDIT: type={type(event).__name__}, row={event.row}, col={event.column}\n")
+        except Exception:
+            pass
+    
+    def _on_missing_cell_edited(self, event):
+        # Write debug log to file since try_binding swallows all exceptions silently
+        import traceback as _tb
+        def _dbg(msg):
+            try:
+                with open("autofill_debug.log", "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now().isoformat()} | {msg}\n")
+            except Exception:
+                pass
+        
+        _dbg(f"EVENT FIRED. event type={type(event).__name__}, keys={list(event.keys()) if isinstance(event, dict) else 'N/A'}")
+        
+        try:
+            # Use same direct access pattern as the working _on_cell_edited
+            r = event.row
+            c = event.column
+            new_val = str(event.value).strip()
+            
+            _dbg(f"Row={r}, Col={c}, Value='{new_val}'")
+            
+            all_data = self.missing_sheet.get_sheet_data()
+            if r >= len(all_data):
+                _dbg(f"Row {r} out of bounds (len={len(all_data)})")
+                return
+                
+            row_data = all_data[r]
+            r_dict = {h: row_data[i] if i < len(row_data) else "" for i, h in enumerate(PENDING_HEADERS)}
+            
+            # Check permissions
+            session = auth.get_current_session()
+            can_add = session.get('Can_Add_Edit_Model', False) if isinstance(session, dict) else False
+            can_approve = session.get('Can_Approve_Model', False) if isinstance(session, dict) else False
+            
+            if not can_add and not can_approve:
+                _dbg("Permission denied")
+                messagebox.showerror("Permission Denied", "You do not have permission to edit models.")
+                self.root.after(100, self._refresh_pending_tab)
+                return
+            
+            # Check if editable status
+            status = str(r_dict.get("Status", "")).strip().lower()
+            _dbg(f"Status='{status}'")
+            if status and status not in ["draft", "need correction", "pending", ""]:
+                messagebox.showerror("Locked", f"This row cannot be edited because its status is '{r_dict.get('Status')}'.")
+                self.root.after(100, self._refresh_pending_tab)
+                return
+                
+            model = r_dict.get("Model", "")
+            if not model:
+                _dbg("No model found in row")
+                return
+                
+            col_name = PENDING_HEADERS[c]
+            _dbg(f"Edited col='{col_name}' for model='{model}'")
+            
+            # Background auto-save
+            def save_draft():
+                try:
+                    from gsheets import GSheetsClient
+                    client = GSheetsClient(self.cred_path.get())
+                    client.update_pending_model_row(self.gsheets_url.get(), model, self.importer, {col_name: new_val})
+                    _dbg("Auto-save success")
+                except Exception as e:
+                    _dbg(f"Auto-save error: {e}")
+                    
+            threading.Thread(target=save_draft, daemon=True).start()
+            
+            # CTH Autofill
+            if col_name == "CTH" and new_val:
+                _dbg(f"Triggering CTH autofill for '{new_val}'")
+                self.root.after(100, lambda: self._do_cth_autofill(r, model, new_val))
+            else:
+                _dbg(f"Not a CTH column edit (col_name='{col_name}'), skipping autofill")
+        except Exception as e:
+            _dbg(f"EXCEPTION: {_tb.format_exc()}")
+            messagebox.showerror("Edit Error", f"Error in cell edit:\n{_tb.format_exc()}")
+            
+    def _do_cth_autofill(self, row_idx, model, cth_val):
+        try:
+            print(f"[DEBUG] _do_cth_autofill started for CTH '{cth_val}'")
+            if not hasattr(self, 'importer_df') or self.importer_df is None or self.importer_df.empty:
+                print(f"[DEBUG] Error: importer_df is missing or empty.")
+                return
+                
+            df = self.importer_df
+            
+            # Robust CTH matching (handle .0 appended by pandas)
+            clean_cth = str(cth_val).strip()
+            if clean_cth.endswith('.0'):
+                clean_cth = clean_cth[:-2]
+            print(f"[DEBUG] Cleaned CTH target: '{clean_cth}'")
+                
+            df_cth = df['CTH'].astype(str).str.strip()
+            df_cth = df_cth.str.replace(r'\.0$', '', regex=True)
+            
+            matches = df[df_cth == clean_cth]
+            print(f"[DEBUG] Found {len(matches)} matches in master sheet.")
+            if matches.empty:
+                return
+                
+            duty_cols = [
+                "Basic Duty Notn", "Basic Duty Notn SNo", "Basic Duty Rate", 
+                "Customs Health Cess Notn", "Customs Health Cess SNo", "Customs Health Cess Rate", 
+                "SWS Notification", "SWS Notification SrNo", "SWS Rate", 
+                "IGST Notification", "IGST Notification SrNo", "IGST Rate", 
+                "AIDC Notn (Customs)", "AIDC Notn Sr.No.(Customs)", "End Use"
+            ]
+            
+            distinct_combos = []
+            for _, row in matches.iterrows():
+                combo = {}
+                for col in duty_cols:
+                    val = str(row.get(col, '')).strip()
+                    # Normalize numeric-looking values (e.g. "12.0" -> "12")
+                    if val.endswith('.0'):
+                        try:
+                            float(val)
+                            val = val[:-2]
+                        except ValueError:
+                            pass
+                    # Treat "0", "0.0", "0%", and empty string as equivalent ("")
+                    if val in ('0', '0.0', '0%', ''):
+                        val = ''
+                    combo[col] = val
+                if combo not in distinct_combos:
+                    distinct_combos.append(combo)
+                    
+            print(f"[DEBUG] Reduced to {len(distinct_combos)} distinct duty combinations.")
+                    
+            if len(distinct_combos) == 1:
+                print(f"[DEBUG] Autofilling distinct combo directly.")
+                self._apply_autofill(row_idx, model, distinct_combos[0])
+                messagebox.showinfo("Autofill", f"Autofilled duty fields based on CTH {cth_val}.")
+            else:
+                print(f"[DEBUG] Showing popup for multiple distinct combos.")
+                self._show_cth_autofill_popup(row_idx, model, cth_val, distinct_combos)
+        except Exception as e:
+            import traceback
+            print(f"[DEBUG] Exception in _do_cth_autofill:\n{traceback.format_exc()}")
+            messagebox.showerror("Autofill Error", f"Error in CTH autofill:\n{traceback.format_exc()}")
+            
+    def _apply_autofill(self, row_idx, model, combo_dict):
+        for col_name, val in combo_dict.items():
+            if col_name in PENDING_HEADERS:
+                c_idx = PENDING_HEADERS.index(col_name)
+                self.missing_sheet.set_cell_data(row_idx, c_idx, val, redraw=False)
+        self.missing_sheet.redraw()
+        
+        def save_autofill():
+            try:
+                from gsheets import GSheetsClient
+                client = GSheetsClient(self.cred_path.get())
+                client.update_pending_model_row(self.gsheets_url.get(), model, self.importer, combo_dict)
+            except Exception as e:
+                print(f"Auto-save autofill error: {e}")
+        threading.Thread(target=save_autofill, daemon=True).start()
+        
+    def _show_cth_autofill_popup(self, row_idx, model, cth_val, combos):
+        # Determine which duty fields actually differ across the candidates
+        duty_cols = list(combos[0].keys())
+        differing_cols = []
+        for col in duty_cols:
+            values_for_col = set(c.get(col, '') for c in combos)
+            if len(values_for_col) > 1:
+                differing_cols.append(col)
+        
+        # If no fields differ (shouldn't happen after dedup), autofill directly
+        if not differing_cols:
+            self._apply_autofill(row_idx, model, combos[0])
+            messagebox.showinfo("Autofill", f"Autofilled duty fields based on CTH {cth_val}.")
+            return
+        
+        popup = tk.Toplevel(self.root)
+        popup.title(f"Multiple Duty Profiles for CTH {cth_val}")
+        popup.geometry("780x600")
+        popup.configure(bg="#F4F6F8")
+        popup.grab_set()
+        
+        tk.Label(
+            popup,
+            text=f"CTH {cth_val} has {len(combos)} distinct duty profiles in the master sheet.",
+            font=("Segoe UI", 10, "bold"), bg="#F4F6F8", fg=_DARK_TEXT
+        ).pack(pady=(10, 2))
+        tk.Label(
+            popup,
+            text=f"Showing full profiles. The {len(differing_cols)} highlighted field(s) (marked with ⚠) differ:",
+            font=("Segoe UI", 9), bg="#F4F6F8", fg=_MUTED_GRAY
+        ).pack(pady=(0, 10))
+        
+        container = tk.Frame(popup, bg=_PANEL_WHITE)
+        container.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        canvas = tk.Canvas(container, bg=_PANEL_WHITE)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=_PANEL_WHITE)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        
+        for i, combo in enumerate(combos):
+            card = tk.Frame(scrollable_frame, bg="#F9FAFB", highlightbackground=_BORDER_GRAY, highlightthickness=1)
+            card.pack(fill=tk.X, pady=8, padx=8)
+            
+            # Header row with option label and button
+            header_row = tk.Frame(card, bg="#EBF5FF", height=32)
+            header_row.pack(fill=tk.X)
+            header_row.pack_propagate(False)
+            
+            tk.Label(
+                header_row, text=f"Option {i+1}",
+                font=("Segoe UI", 10, "bold"), bg="#EBF5FF", fg=_PRIMARY_BLUE
+            ).pack(side=tk.LEFT, padx=10)
+            
+            btn = _brand_button(
+                header_row, "✓ Use This Profile",
+                lambda c=combo: [self._apply_autofill(row_idx, model, c), popup.destroy()]
+            )
+            btn.pack(side=tk.RIGHT, padx=10)
+            
+            # Fields table containing the FULL profile
+            fields_frame = tk.Frame(card, bg="#F9FAFB")
+            fields_frame.pack(fill=tk.X, padx=8, pady=8)
+            
+            for j, col in enumerate(duty_cols):
+                val = combo.get(col, '')
+                display_val = val if val else "(empty)"
+                
+                is_differing = col in differing_cols
+                
+                if is_differing:
+                    # Highlight differing fields with light amber bg and bold text
+                    row_bg = "#FEF3C7"
+                    label_fg = "#B45309"
+                    val_fg = "#B45309"
+                    font_style = ("Segoe UI", 9, "bold")
+                    display_text = f"{display_val} ⚠"
+                else:
+                    row_bg = "#FFFFFF" if j % 2 == 0 else "#F9FAFB"
+                    label_fg = _DARK_TEXT
+                    val_fg = _MUTED_GRAY if not val else _PRIMARY_BLUE
+                    font_style = ("Segoe UI", 9)
+                    display_text = display_val
+                
+                row_frame = tk.Frame(fields_frame, bg=row_bg)
+                row_frame.pack(fill=tk.X)
+                
+                tk.Label(
+                    row_frame, text=col, font=font_style,
+                    bg=row_bg, fg=label_fg, width=32, anchor="w"
+                ).pack(side=tk.LEFT, padx=(8, 4), pady=3)
+                
+                tk.Label(
+                    row_frame, text=display_text, font=font_style,
+                    bg=row_bg, fg=val_fg, anchor="w"
+                ).pack(side=tk.LEFT, padx=(4, 8), pady=3)
+            
+    def _on_missing_rc_select(self, event):
+        session = auth.get_current_session()
+        can_approve = session.get('Can_Approve_Model', False) if isinstance(session, dict) else False
+        if not can_approve:
+            return
+            
+        r = event.row
+        all_data = self.missing_sheet.get_sheet_data()
+        if r >= len(all_data):
+            return
+            
+        row_data = all_data[r]
+        r_dict = {h: row_data[i] if i < len(row_data) else "" for i, h in enumerate(PENDING_HEADERS)}
+        model = r_dict.get("Model", "")
+        if not model:
+            return
+            
+        popup_menu = tk.Menu(self.root, tearoff=0)
+        
+        def set_status(new_status):
+            self.root.config(cursor="watch")
+            self.root.update_idletasks()
+            def update_thread():
+                try:
+                    from gsheets import GSheetsClient
+                    from datetime import datetime
+                    client = GSheetsClient(self.cred_path.get())
+                    username = session.get('Username', 'User') if isinstance(session, dict) else 'User'
+                    updates = {
+                        "Status": new_status,
+                        "Reviewed_By": username,
+                        "Reviewed_At": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    client.update_pending_model_row(self.gsheets_url.get(), model, self.importer, updates)
+                    self.root.after(0, lambda: [self.root.config(cursor=""), self._refresh_pending_tab()])
+                except Exception as e:
+                    self.root.after(0, lambda err=e: [self.root.config(cursor=""), messagebox.showerror("Error", f"Failed to update status:\n{err}")])
+            threading.Thread(target=update_thread, daemon=True).start()
+            
+        popup_menu.add_command(label=f"Approve Model '{model}'", command=lambda: set_status("Approved"))
+        popup_menu.add_command(label=f"Send back for Correction", command=lambda: set_status("Need Correction"))
+        popup_menu.add_command(label=f"Reject Model", command=lambda: set_status("Rejected"))
+        
+        popup_menu.tk_popup(event.widget.winfo_rootx() + event.x, event.widget.winfo_rooty() + event.y)
         
     def _do_recheck_models(self):
         if not self.importer:
@@ -2427,4 +3259,3 @@ class ChecklistApp:
         if hasattr(self, 'status_label') and self.status_label.winfo_exists():
             self.status_label.config(text="")
         messagebox.showerror("Error", f"Failed to reload master: {err}")
-
